@@ -1,555 +1,391 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, Image as ImageIcon, Sliders, Download, RefreshCw, Maximize, Check, Ruler } from 'lucide-react';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>VanScanner Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        body { touch-action: manipulation; background-color: #09090b; color: #e4e4e7; }
+        canvas { touch-action: none; }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { height: 8px; }
+        ::-webkit-scrollbar-track { background: #18181b; }
+        ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-// --- Helper: Matrix Math for Homography ---
-const solveHomography = (srcPts, dstPts) => {
-  // Solves for H where dst = H * src
-  // We actually need Inverse H (dst -> src) for pixel mapping, 
-  // so we pass (dst, src) to this function to get the transform that maps Destination pixels back to Source pixels.
-  
-  let a = [];
-  for (let i = 0; i < 4; i++) {
-    let x = srcPts[i].x, y = srcPts[i].y;
-    let u = dstPts[i].x, v = dstPts[i].y;
-    a.push([x, y, 1, 0, 0, 0, -x*u, -y*u]);
-    a.push([0, 0, 0, x, y, 1, -x*v, -y*v]);
-  }
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useCallback } = React;
 
-  // Gaussian elimination
-  const n = 8;
-  // Augment with RHS (which is just u,v? No, standard DLT sets h33=1 and solves Ah=b)
-  // Simplified: We assume h33 = 1.
-  let b = [];
-  for(let i=0; i<4; i++) { b.push(dstPts[i].x); b.push(dstPts[i].y); }
+        // --- Icons (Inline SVGs to avoid dependencies) ---
+        const IconCamera = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>;
+        const IconRuler = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0l12.6 12.6z"/><line x1="13" y1="6" x2="19" y2="12"/><line x1="16" y1="6" x2="19" y2="9"/><line x1="7" y1="12" x2="13" y2="18"/><line x1="10" y1="15" x2="13" y2="18"/></svg>;
+        const IconCheck = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>;
+        const IconDownload = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>;
+        const IconRefresh = ({className}) => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>;
+        const IconSliders = () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>;
+        const IconImage = () => <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>;
 
-  // Gauss-Jordan
-  for (let i = 0; i < n; i++) {
-    let pivot = i;
-    for (let j = i + 1; j < n; j++) {
-      if (Math.abs(a[j][i]) > Math.abs(a[pivot][i])) pivot = j;
-    }
-    [a[i], a[pivot]] = [a[pivot], a[i]];
-    [b[i], b[pivot]] = [b[pivot], b[i]];
+        // --- Helper: Matrix Math for Homography ---
+        const solveHomography = (srcPts, dstPts) => {
+            let a = [];
+            for (let i = 0; i < 4; i++) {
+                let x = srcPts[i].x, y = srcPts[i].y;
+                let u = dstPts[i].x, v = dstPts[i].y;
+                a.push([x, y, 1, 0, 0, 0, -x*u, -y*u]);
+                a.push([0, 0, 0, x, y, 1, -x*v, -y*v]);
+            }
+            const n = 8;
+            let b = [];
+            for(let i=0; i<4; i++) { b.push(dstPts[i].x); b.push(dstPts[i].y); }
+            for (let i = 0; i < n; i++) {
+                let pivot = i;
+                for (let j = i + 1; j < n; j++) {
+                    if (Math.abs(a[j][i]) > Math.abs(a[pivot][i])) pivot = j;
+                }
+                [a[i], a[pivot]] = [a[pivot], a[i]];
+                [b[i], b[pivot]] = [b[pivot], b[i]];
+                let div = a[i][i];
+                for (let j = i; j < n; j++) a[i][j] /= div;
+                b[i] /= div;
+                for (let k = 0; k < n; k++) {
+                    if (k !== i) {
+                        let mul = a[k][i];
+                        for (let j = i; j < n; j++) a[k][j] -= mul * a[i][j];
+                        b[k] -= mul * b[i];
+                    }
+                }
+            }
+            return [b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], 1];
+        };
 
-    let div = a[i][i];
-    for (let j = i; j < n; j++) a[i][j] /= div;
-    b[i] /= div;
+        // --- App Component ---
+        function VanScanner() {
+            const [mode, setMode] = useState('rectify');
 
-    for (let k = 0; k < n; k++) {
-      if (k !== i) {
-        let mul = a[k][i];
-        for (let j = i; j < n; j++) a[k][j] -= mul * a[i][j];
-        b[k] -= mul * b[i];
-      }
-    }
-  }
-
-  return [
-    b[0], b[1], b[2],
-    b[3], b[4], b[5],
-    b[6], b[7], 1
-  ];
-};
-
-export default function VanScanner() {
-  const [mode, setMode] = useState('rectify'); // 'slitscan' or 'rectify'
-
-  return (
-    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-orange-500 selection:text-white overflow-hidden">
-      {/* Header */}
-      <header className="flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800 z-10">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-orange-500 rounded flex items-center justify-center text-zinc-950 font-bold text-xs">VS</div>
-          <h1 className="font-bold text-lg tracking-tight">VanScanner</h1>
-        </div>
-        <div className="flex bg-zinc-800 rounded-lg p-1">
-          <button 
-            onClick={() => setMode('rectify')}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${mode === 'rectify' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}
-          >
-            Rectify
-          </button>
-          <button 
-            onClick={() => setMode('slitscan')}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${mode === 'slitscan' ? 'bg-orange-600 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}
-          >
-            Slit Scan
-          </button>
-        </div>
-      </header>
-
-      {/* Main Content Area */}
-      <main className="flex-1 relative overflow-hidden">
-        {mode === 'rectify' ? <RectifyTool /> : <SlitScanTool />}
-      </main>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// TOOL 1: RECTIFIER (De-Skew)
-// ---------------------------------------------------------------------------
-function RectifyTool() {
-  const [image, setImage] = useState(null);
-  const [points, setPoints] = useState(null);
-  const [resultImg, setResultImg] = useState(null);
-  const [dimensions, setDimensions] = useState({ w: 1000, h: 500 }); // mm
-  const canvasRef = useRef(null);
-  const containerRef = useRef(null);
-  const [dragging, setDragging] = useState(null);
-  const [processing, setProcessing] = useState(false);
-
-  // Load image
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const img = new Image();
-      img.onload = () => {
-        setImage(img);
-        setResultImg(null);
-        // Initialize points at 10% margins
-        const w = img.width;
-        const h = img.height;
-        setPoints([
-          { x: w * 0.2, y: h * 0.2 }, // TL
-          { x: w * 0.8, y: h * 0.2 }, // TR
-          { x: w * 0.8, y: h * 0.8 }, // BR
-          { x: w * 0.2, y: h * 0.8 }, // BL
-        ]);
-      };
-      img.src = evt.target.result;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // Handle Dragging Points (Touch & Mouse)
-  const getImgCoords = (clientX, clientY) => {
-    if (!containerRef.current || !image) return null;
-    const rect = containerRef.current.getBoundingClientRect();
-    const scaleX = image.width / rect.width;
-    const scaleY = image.height / rect.height;
-    return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY
-    };
-  };
-
-  const handleStart = (idx) => (e) => {
-    e.preventDefault(); // Prevent scroll
-    setDragging(idx);
-  };
-
-  const handleMove = (e) => {
-    if (dragging === null) return;
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-    
-    const coords = getImgCoords(clientX, clientY);
-    if (coords) {
-      setPoints(prev => {
-        const newPts = [...prev];
-        newPts[dragging] = coords;
-        return newPts;
-      });
-    }
-  };
-
-  const handleEnd = () => setDragging(null);
-
-  // The Magic: Warp Logic
-  const processRectification = async () => {
-    setProcessing(true);
-    // Allow UI to update
-    await new Promise(r => setTimeout(r, 50));
-
-    const canvas = document.createElement('canvas');
-    const w = parseInt(dimensions.w);
-    const h = parseInt(dimensions.h);
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-
-    // Source Points (The quad user selected)
-    // Dest Points (The perfect rectangle 0,0 -> w,h)
-    const dstQuad = [
-      { x: 0, y: 0 },
-      { x: w, y: 0 },
-      { x: w, y: h },
-      { x: 0, y: h }
-    ];
-
-    // Get Homography Matrix (Inverse: Map Dest pixel -> Source pixel)
-    const H = solveHomography(dstQuad, points);
-
-    // Prepare pixel data
-    // Note: For 4K images this loop is heavy in JS, but fine for single run.
-    const srcCanvas = document.createElement('canvas');
-    srcCanvas.width = image.width;
-    srcCanvas.height = image.height;
-    const srcCtx = srcCanvas.getContext('2d');
-    srcCtx.drawImage(image, 0, 0);
-    const srcData = srcCtx.getImageData(0, 0, image.width, image.height);
-    const srcPixels = srcData.data;
-    
-    const dstData = ctx.createImageData(w, h);
-    const dstPixels = dstData.data;
-
-    const sw = image.width;
-    const sh = image.height;
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        // Apply Homography H to (x,y,1)
-        const D = H[6]*x + H[7]*y + H[8];
-        const u = (H[0]*x + H[1]*y + H[2]) / D;
-        const v = (H[3]*x + H[4]*y + H[5]) / D;
-
-        // Bilinear Interpolation
-        if (u >= 0 && u < sw - 1 && v >= 0 && v < sh - 1) {
-          const u0 = Math.floor(u);
-          const v0 = Math.floor(v);
-          const u1 = u0 + 1;
-          const v1 = v0 + 1;
-          const dx = u - u0;
-          const dy = v - v0;
-          const w00 = (1 - dx) * (1 - dy);
-          const w01 = (1 - dx) * dy;
-          const w10 = dx * (1 - dy);
-          const w11 = dx * dy;
-
-          const idx00 = (v0 * sw + u0) * 4;
-          const idx01 = (v1 * sw + u0) * 4;
-          const idx10 = (v0 * sw + u1) * 4;
-          const idx11 = (v1 * sw + u1) * 4;
-
-          const dstIdx = (y * w + x) * 4;
-          for (let c = 0; c < 3; c++) {
-            dstPixels[dstIdx + c] = 
-              srcPixels[idx00 + c] * w00 +
-              srcPixels[idx10 + c] * w10 +
-              srcPixels[idx01 + c] * w01 +
-              srcPixels[idx11 + c] * w11;
-          }
-          dstPixels[dstIdx + 3] = 255; // Alpha
+            return (
+                <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-orange-500 selection:text-white overflow-hidden">
+                    {/* Header */}
+                    <header className="flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800 z-10">
+                        <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 bg-orange-500 rounded flex items-center justify-center text-zinc-950 font-bold text-xs">VS</div>
+                            <h1 className="font-bold text-lg tracking-tight">VanScanner</h1>
+                        </div>
+                        <div className="flex bg-zinc-800 rounded-lg p-1">
+                            <button onClick={() => setMode('rectify')} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${mode === 'rectify' ? 'bg-zinc-600 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>Rectify</button>
+                            <button onClick={() => setMode('slitscan')} className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${mode === 'slitscan' ? 'bg-orange-600 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>Slit Scan</button>
+                        </div>
+                    </header>
+                    <main className="flex-1 relative overflow-hidden">
+                        {mode === 'rectify' ? <RectifyTool /> : <SlitScanTool />}
+                    </main>
+                </div>
+            );
         }
-      }
-    }
 
-    ctx.putImageData(dstData, 0, 0);
-    setResultImg(canvas.toDataURL());
-    setProcessing(false);
-  };
+        // --- Rectify Tool ---
+        function RectifyTool() {
+            const [image, setImage] = useState(null);
+            const [points, setPoints] = useState(null);
+            const [resultImg, setResultImg] = useState(null);
+            const [dimensions, setDimensions] = useState({ w: 1000, h: 500 });
+            const containerRef = useRef(null);
+            const [dragging, setDragging] = useState(null);
+            const [processing, setProcessing] = useState(false);
 
-  const downloadResult = () => {
-    const link = document.createElement('a');
-    link.download = 'rectified_frame.png';
-    link.href = resultImg;
-    link.click();
-  };
+            const handleFileChange = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        setImage(img);
+                        setResultImg(null);
+                        const w = img.width;
+                        const h = img.height;
+                        setPoints([
+                            { x: w * 0.2, y: h * 0.2 },
+                            { x: w * 0.8, y: h * 0.2 },
+                            { x: w * 0.8, y: h * 0.8 },
+                            { x: w * 0.2, y: h * 0.8 },
+                        ]);
+                    };
+                    img.src = evt.target.result;
+                };
+                reader.readAsDataURL(file);
+            };
 
-  return (
-    <div className="h-full flex flex-col bg-zinc-900"
-      onMouseMove={handleMove}
-      onTouchMove={handleMove}
-      onMouseUp={handleEnd}
-      onTouchEnd={handleEnd}
-    >
-      {/* Toolbar */}
-      <div className="flex-none p-4 bg-zinc-800 border-b border-zinc-700 flex flex-wrap gap-4 items-center z-20">
-        {!image ? (
-           <label className="cursor-pointer flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg font-medium shadow-lg transition-all">
-             <Camera size={20} />
-             <span>Take/Upload Photo</span>
-             <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
-           </label>
-        ) : (
-          <>
-            <div className="flex items-center gap-2 bg-zinc-900 p-1.5 rounded border border-zinc-700">
-              <Ruler size={16} className="text-zinc-500 ml-2" />
-              <div className="flex flex-col px-2">
-                <span className="text-[10px] text-zinc-500 font-mono uppercase">Real Width (mm)</span>
-                <input 
-                  type="number" 
-                  value={dimensions.w} 
-                  onChange={e => setDimensions(d => ({ ...d, w: e.target.value }))}
-                  className="w-20 bg-transparent text-sm font-mono text-white outline-none"
-                />
-              </div>
-              <div className="w-px h-8 bg-zinc-700 mx-1"></div>
-              <div className="flex flex-col px-2">
-                <span className="text-[10px] text-zinc-500 font-mono uppercase">Real Height (mm)</span>
-                <input 
-                  type="number" 
-                  value={dimensions.h} 
-                  onChange={e => setDimensions(d => ({ ...d, h: e.target.value }))}
-                  className="w-20 bg-transparent text-sm font-mono text-white outline-none"
-                />
-              </div>
-            </div>
+            const getImgCoords = (clientX, clientY) => {
+                if (!containerRef.current || !image) return null;
+                const rect = containerRef.current.getBoundingClientRect();
+                const scaleX = image.width / rect.width;
+                const scaleY = image.height / rect.height;
+                return {
+                    x: (clientX - rect.left) * scaleX,
+                    y: (clientY - rect.top) * scaleY
+                };
+            };
 
-            {!resultImg && (
-              <button 
-                onClick={processRectification} 
-                disabled={processing}
-                className="ml-auto bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 shadow-lg disabled:opacity-50"
-              >
-                {processing ? <RefreshCw className="animate-spin" size={18}/> : <Check size={18} />}
-                {processing ? 'Calculating...' : 'Generate'}
-              </button>
-            )}
-          </>
-        )}
-      </div>
+            const handleStart = (idx) => (e) => { e.preventDefault(); setDragging(idx); };
+            const handleMove = (e) => {
+                if (dragging === null) return;
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                const coords = getImgCoords(clientX, clientY);
+                if (coords) {
+                    setPoints(prev => {
+                        const newPts = [...prev];
+                        newPts[dragging] = coords;
+                        return newPts;
+                    });
+                }
+            };
+            const handleEnd = () => setDragging(null);
 
-      {/* Workspace */}
-      <div className="flex-1 relative bg-zinc-950 flex items-center justify-center overflow-hidden select-none">
-        {!image && (
-          <div className="text-center text-zinc-500 p-8">
-            <ImageIcon size={48} className="mx-auto mb-4 opacity-20" />
-            <p className="text-lg font-medium">Rectification Tool</p>
-            <p className="text-sm opacity-60 mt-2 max-w-xs mx-auto">Upload a photo of your window. Drag corners to the frame. We'll flatten it for CAD.</p>
-          </div>
-        )}
+            const processRectification = async () => {
+                setProcessing(true);
+                await new Promise(r => setTimeout(r, 50));
 
-        {image && !resultImg && (
-          <div className="relative shadow-2xl" ref={containerRef}>
-            <img 
-              src={image.src} 
-              alt="Source" 
-              className="max-w-full max-h-[70vh] object-contain pointer-events-none select-none opacity-80" 
-            />
-            {/* SVG Overlay for Handles */}
-            <svg className="absolute inset-0 w-full h-full pointer-events-none">
-              {/* Polygon Path */}
-              <path 
-                d={`M ${points[0].x/image.width*100}% ${points[0].y/image.height*100}% L ${points[1].x/image.width*100}% ${points[1].y/image.height*100}% L ${points[2].x/image.width*100}% ${points[2].y/image.height*100}% L ${points[3].x/image.width*100}% ${points[3].y/image.height*100}% Z`}
-                fill="rgba(249, 115, 22, 0.2)"
-                stroke="rgba(249, 115, 22, 0.8)"
-                strokeWidth="2"
-                vectorEffect="non-scaling-stroke"
-              />
-            </svg>
-            {/* Draggable Handles */}
-            {points.map((pt, i) => (
-              <div
-                key={i}
-                className="absolute w-8 h-8 -ml-4 -mt-4 cursor-move z-30 flex items-center justify-center group"
-                style={{ left: `${pt.x/image.width*100}%`, top: `${pt.y/image.height*100}%` }}
-                onMouseDown={handleStart(i)}
-                onTouchStart={handleStart(i)}
-              >
-                <div className="w-4 h-4 bg-orange-500 border-2 border-white rounded-full shadow-sm group-hover:scale-125 transition-transform" />
-              </div>
-            ))}
-          </div>
-        )}
+                const canvas = document.createElement('canvas');
+                const w = parseInt(dimensions.w);
+                const h = parseInt(dimensions.h);
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                const dstQuad = [{ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h }];
+                const H = solveHomography(dstQuad, points);
 
-        {resultImg && (
-          <div className="relative flex flex-col items-center gap-4 animate-in fade-in zoom-in duration-300">
-            <img src={resultImg} className="max-w-full max-h-[60vh] shadow-2xl border border-zinc-700 bg-[url('https://www.transparenttextures.com/patterns/diagmonds-light.png')] bg-zinc-800" />
-            <div className="flex gap-4">
-               <button onClick={() => setResultImg(null)} className="px-4 py-2 bg-zinc-800 text-zinc-300 rounded-lg border border-zinc-700 hover:bg-zinc-700">
-                 Back to Edit
-               </button>
-               <button onClick={downloadResult} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium shadow-lg hover:bg-emerald-500 flex items-center gap-2">
-                 <Download size={18} /> Download Image
-               </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+                const srcCanvas = document.createElement('canvas');
+                srcCanvas.width = image.width;
+                srcCanvas.height = image.height;
+                const srcCtx = srcCanvas.getContext('2d');
+                srcCtx.drawImage(image, 0, 0);
+                const srcData = srcCtx.getImageData(0, 0, image.width, image.height);
+                const srcPixels = srcData.data;
+                const dstData = ctx.createImageData(w, h);
+                const dstPixels = dstData.data;
+                const sw = image.width;
+                const sh = image.height;
 
+                for (let y = 0; y < h; y++) {
+                    for (let x = 0; x < w; x++) {
+                        const D = H[6]*x + H[7]*y + H[8];
+                        const u = (H[0]*x + H[1]*y + H[2]) / D;
+                        const v = (H[3]*x + H[4]*y + H[5]) / D;
+                        if (u >= 0 && u < sw - 1 && v >= 0 && v < sh - 1) {
+                            const u0 = Math.floor(u), v0 = Math.floor(v);
+                            const dx = u - u0, dy = v - v0;
+                            const w00 = (1 - dx) * (1 - dy), w01 = (1 - dx) * dy, w10 = dx * (1 - dy), w11 = dx * dy;
+                            const idx00 = (v0 * sw + u0) * 4, idx01 = ((v0+1) * sw + u0) * 4, idx10 = (v0 * sw + (u0+1)) * 4, idx11 = ((v0+1) * sw + (u0+1)) * 4;
+                            const dstIdx = (y * w + x) * 4;
+                            for (let c = 0; c < 3; c++) {
+                                dstPixels[dstIdx + c] = srcPixels[idx00 + c] * w00 + srcPixels[idx10 + c] * w10 + srcPixels[idx01 + c] * w01 + srcPixels[idx11 + c] * w11;
+                            }
+                            dstPixels[dstIdx + 3] = 255;
+                        }
+                    }
+                }
+                ctx.putImageData(dstData, 0, 0);
+                setResultImg(canvas.toDataURL());
+                setProcessing(false);
+            };
 
-// ---------------------------------------------------------------------------
-// TOOL 2: SLIT SCANNER (Strip Panorama)
-// ---------------------------------------------------------------------------
-function SlitScanTool() {
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const [scanning, setScanning] = useState(false);
-  const [stream, setStream] = useState(null);
-  const [stretch, setStretch] = useState(1); // Width multiplier
-  const requestRef = useRef();
-  const xPos = useRef(0);
-  const [finalImage, setFinalImage] = useState(null);
+            const downloadResult = () => {
+                const link = document.createElement('a');
+                link.download = 'rectified_frame.png';
+                link.href = resultImg;
+                link.click();
+            };
 
-  // Start Camera
-  const startCamera = async () => {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          facingMode: 'environment', 
-          width: { ideal: 1920 }, 
-          height: { ideal: 1080 } 
-        } 
-      });
-      setStream(s);
-      if (videoRef.current) {
-        videoRef.current.srcObject = s;
-        videoRef.current.play();
-      }
-    } catch (err) {
-      alert("Camera access required for Slit Scan.");
-    }
-  };
+            return (
+                <div className="h-full flex flex-col bg-zinc-900" onMouseMove={handleMove} onTouchMove={handleMove} onMouseUp={handleEnd} onTouchEnd={handleEnd}>
+                    <div className="flex-none p-4 bg-zinc-800 border-b border-zinc-700 flex flex-wrap gap-4 items-center z-20">
+                        {!image ? (
+                           <label className="cursor-pointer flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg font-medium shadow-lg transition-all">
+                             <IconCamera />
+                             <span>Take/Upload Photo</span>
+                             <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+                           </label>
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-2 bg-zinc-900 p-1.5 rounded border border-zinc-700">
+                              <IconRuler className="text-zinc-500 ml-2" />
+                              <div className="flex flex-col px-2">
+                                <span className="text-[10px] text-zinc-500 font-mono uppercase">Real Width (mm)</span>
+                                <input type="number" value={dimensions.w} onChange={e => setDimensions(d => ({ ...d, w: e.target.value }))} className="w-20 bg-transparent text-sm font-mono text-white outline-none" />
+                              </div>
+                              <div className="w-px h-8 bg-zinc-700 mx-1"></div>
+                              <div className="flex flex-col px-2">
+                                <span className="text-[10px] text-zinc-500 font-mono uppercase">Real Height (mm)</span>
+                                <input type="number" value={dimensions.h} onChange={e => setDimensions(d => ({ ...d, h: e.target.value }))} className="w-20 bg-transparent text-sm font-mono text-white outline-none" />
+                              </div>
+                            </div>
+                            {!resultImg && (
+                              <button onClick={processRectification} disabled={processing} className="ml-auto bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 shadow-lg disabled:opacity-50">
+                                {processing ? <IconRefresh className="animate-spin"/> : <IconCheck />}
+                                {processing ? 'Calculating...' : 'Generate'}
+                              </button>
+                            )}
+                          </>
+                        )}
+                    </div>
+                    <div className="flex-1 relative bg-zinc-950 flex items-center justify-center overflow-hidden select-none">
+                        {!image && (
+                          <div className="text-center text-zinc-500 p-8">
+                            <div className="mx-auto mb-4 opacity-20 flex justify-center"><IconImage /></div>
+                            <p className="text-lg font-medium">Rectification Tool</p>
+                            <p className="text-sm opacity-60 mt-2 max-w-xs mx-auto">Upload a photo of your window. Drag corners to the frame. We'll flatten it for CAD.</p>
+                          </div>
+                        )}
+                        {image && !resultImg && (
+                          <div className="relative shadow-2xl" ref={containerRef}>
+                            <img src={image.src} alt="Source" className="max-w-full max-h-[70vh] object-contain pointer-events-none select-none opacity-80" />
+                            <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                              <path d={`M ${points[0].x/image.width*100}% ${points[0].y/image.height*100}% L ${points[1].x/image.width*100}% ${points[1].y/image.height*100}% L ${points[2].x/image.width*100}% ${points[2].y/image.height*100}% L ${points[3].x/image.width*100}% ${points[3].y/image.height*100}% Z`} fill="rgba(249, 115, 22, 0.2)" stroke="rgba(249, 115, 22, 0.8)" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+                            </svg>
+                            {points.map((pt, i) => (
+                              <div key={i} className="absolute w-8 h-8 -ml-4 -mt-4 cursor-move z-30 flex items-center justify-center group" style={{ left: `${pt.x/image.width*100}%`, top: `${pt.y/image.height*100}%` }} onMouseDown={handleStart(i)} onTouchStart={handleStart(i)}>
+                                <div className="w-4 h-4 bg-orange-500 border-2 border-white rounded-full shadow-sm group-hover:scale-125 transition-transform" />
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {resultImg && (
+                          <div className="relative flex flex-col items-center gap-4 animate-in fade-in zoom-in duration-300">
+                            <img src={resultImg} className="max-w-full max-h-[60vh] shadow-2xl border border-zinc-700" />
+                            <div className="flex gap-4">
+                               <button onClick={() => setResultImg(null)} className="px-4 py-2 bg-zinc-800 text-zinc-300 rounded-lg border border-zinc-700 hover:bg-zinc-700">Back to Edit</button>
+                               <button onClick={downloadResult} className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-medium shadow-lg hover:bg-emerald-500 flex items-center gap-2"><IconDownload /> Download Image</button>
+                            </div>
+                          </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
 
-  useEffect(() => {
-    startCamera();
-    return () => {
-      if (stream) stream.getTracks().forEach(t => t.stop());
-    };
-  }, []);
+        // --- Slit Scan Tool ---
+        function SlitScanTool() {
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const [scanning, setScanning] = useState(false);
+            const [stream, setStream] = useState(null);
+            const [stretch, setStretch] = useState(1);
+            const requestRef = useRef();
+            const xPos = useRef(0);
+            const [finalImage, setFinalImage] = useState(null);
 
-  // Reset Canvas
-  const reset = () => {
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    canvas.width = 0; // Clear
-    canvas.height = videoRef.current.videoHeight; 
-    xPos.current = 0;
-    setFinalImage(null);
-  };
+            const startCamera = async () => {
+                try {
+                    const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } });
+                    setStream(s);
+                    if (videoRef.current) { videoRef.current.srcObject = s; videoRef.current.play(); }
+                } catch (err) {
+                    alert("Camera Error: Ensure you are using HTTPS or Localhost. Camera access is blocked on unsecured file:// or http:// sites.");
+                }
+            };
+            useEffect(() => { startCamera(); return () => { if (stream) stream.getTracks().forEach(t => t.stop()); }; }, []);
 
-  // The Scan Loop
-  const scanTick = useCallback(() => {
-    if (!videoRef.current || !canvasRef.current) return;
-    
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
+            const reset = () => {
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                canvas.width = 0; canvas.height = videoRef.current.videoHeight; 
+                xPos.current = 0; setFinalImage(null);
+            };
 
-    // Only init height once
-    if (canvas.height !== video.videoHeight) {
-      canvas.height = video.videoHeight;
-    }
-    
-    // Grow canvas
-    const sliceWidth = 2; // px source
-    const drawWidth = Math.max(1, 2 * stretch); // px dest (stretch factor)
-    
-    // Resize canvas if needed (dynamic growing)
-    // Note: Expensive to resize every frame, better to pre-allocate or chunk. 
-    // For simplicity in this specific restricted environment, we use getImageData/putImageData to persistent buffer or just simple drawImage if we pre-allocated.
-    // Let's pre-allocate a "strip" or just use a large width and crop later.
-    if (canvas.width < xPos.current + drawWidth) {
-        // Simple approach: Use a temp canvas to hold data during resize
-        const temp = document.createElement('canvas');
-        temp.width = canvas.width;
-        temp.height = canvas.height;
-        temp.getContext('2d').drawImage(canvas, 0, 0);
-        canvas.width = Math.max(canvas.width + 500, xPos.current + 500);
-        ctx.drawImage(temp, 0, 0);
-    }
+            const scanTick = useCallback(() => {
+                if (!videoRef.current || !canvasRef.current) return;
+                const video = videoRef.current;
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+                
+                const sliceWidth = 2;
+                const drawWidth = Math.max(1, 2 * stretch);
+                
+                if (canvas.width < xPos.current + drawWidth) {
+                    const temp = document.createElement('canvas');
+                    temp.width = canvas.width; temp.height = canvas.height;
+                    temp.getContext('2d').drawImage(canvas, 0, 0);
+                    canvas.width = Math.max(canvas.width + 500, xPos.current + 500);
+                    ctx.drawImage(temp, 0, 0);
+                }
+                const sx = (video.videoWidth / 2) - (sliceWidth / 2);
+                ctx.drawImage(video, sx, 0, sliceWidth, video.videoHeight, xPos.current, 0, drawWidth, video.videoHeight);
+                xPos.current += drawWidth;
+                requestRef.current = requestAnimationFrame(scanTick);
+            }, [stretch]);
 
-    // Capture Center Slice
-    // Source: Center of video, 2px wide, full height
-    const sx = (video.videoWidth / 2) - (sliceWidth / 2);
-    
-    ctx.drawImage(
-      video, 
-      sx, 0, sliceWidth, video.videoHeight, // Source
-      xPos.current, 0, drawWidth, video.videoHeight // Dest
-    );
+            const toggleScan = () => {
+                if (scanning) {
+                    setScanning(false);
+                    cancelAnimationFrame(requestRef.current);
+                    const canvas = canvasRef.current;
+                    const finalW = xPos.current;
+                    const temp = document.createElement('canvas');
+                    temp.width = finalW; temp.height = canvas.height;
+                    temp.getContext('2d').drawImage(canvas, 0, 0, finalW, canvas.height, 0, 0, finalW, canvas.height);
+                    setFinalImage(temp.toDataURL());
+                } else {
+                    if (finalImage) reset();
+                    setScanning(true);
+                    requestRef.current = requestAnimationFrame(scanTick);
+                }
+            };
 
-    xPos.current += drawWidth;
-    requestRef.current = requestAnimationFrame(scanTick);
-  }, [stretch]);
+            return (
+                <div className="h-full flex flex-col bg-zinc-950">
+                    <div className="p-4 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between z-20">
+                         <div className="flex items-center gap-4">
+                           <div className="flex flex-col">
+                             <span className="text-[10px] uppercase text-zinc-500 font-bold tracking-wider">Stretch Factor</span>
+                             <div className="flex items-center gap-2">
+                               <IconSliders />
+                               <input type="range" min="0.5" max="4.0" step="0.1" value={stretch} onChange={(e) => setStretch(parseFloat(e.target.value))} className="w-32 accent-orange-500 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer" />
+                               <span className="text-xs font-mono text-orange-400">{stretch.toFixed(1)}x</span>
+                             </div>
+                           </div>
+                         </div>
+                         {finalImage && (
+                           <a href={finalImage} download="slitscan_panorama.png" className="text-emerald-500 hover:text-emerald-400 flex items-center gap-1 text-sm font-medium"><IconDownload /> Save</a>
+                         )}
+                    </div>
+                    <div className="flex-1 relative overflow-hidden flex flex-col">
+                        <div className="relative h-1/3 bg-black border-b border-zinc-800 flex justify-center overflow-hidden">
+                          <video ref={videoRef} autoPlay playsInline muted className="h-full object-cover opacity-80" />
+                          <div className="absolute top-0 bottom-0 left-1/2 w-0.5 bg-red-500 shadow-[0_0_10px_rgba(255,0,0,0.8)] z-10"></div>
+                          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/20 text-red-200 text-[10px] px-2 py-0.5 rounded backdrop-blur-sm border border-red-500/30">SCAN LINE</div>
+                        </div>
+                        <div className="flex-1 bg-zinc-900 overflow-x-auto overflow-y-hidden relative custom-scrollbar">
+                          <div className="absolute inset-0 flex items-center">
+                             <canvas ref={canvasRef} className="h-full bg-zinc-950 shadow-xl" />
+                          </div>
+                          {!scanning && !xPos.current && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                               <p className="text-zinc-700 font-black text-6xl opacity-20 uppercase tracking-tighter">Result Area</p>
+                            </div>
+                          )}
+                        </div>
+                        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30">
+                          <button onClick={toggleScan} className={`w-20 h-20 rounded-full border-4 shadow-[0_0_30px_rgba(0,0,0,0.5)] flex items-center justify-center transition-all ${scanning ? 'bg-red-600 border-red-400 scale-110' : 'bg-white border-zinc-300 hover:scale-105'}`}>
+                            <div className={`w-8 h-8 rounded-sm transition-all ${scanning ? 'bg-white' : 'bg-red-600 rounded-full'}`} />
+                          </button>
+                          <p className="text-center mt-4 text-zinc-400 text-xs font-medium drop-shadow-md bg-black/50 px-2 py-1 rounded-full">{scanning ? 'Move slowly right...' : 'Tap to Scan'}</p>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
 
-  const toggleScan = () => {
-    if (scanning) {
-      setScanning(false);
-      cancelAnimationFrame(requestRef.current);
-      // Crop canvas to final
-      const canvas = canvasRef.current;
-      const finalW = xPos.current;
-      const temp = document.createElement('canvas');
-      temp.width = finalW;
-      temp.height = canvas.height;
-      temp.getContext('2d').drawImage(canvas, 0, 0, finalW, canvas.height, 0, 0, finalW, canvas.height);
-      setFinalImage(temp.toDataURL());
-    } else {
-      if (finalImage) reset(); // Auto reset on new scan
-      setScanning(true);
-      requestRef.current = requestAnimationFrame(scanTick);
-    }
-  };
-
-  return (
-    <div className="h-full flex flex-col bg-zinc-950">
-      {/* Top Controls */}
-      <div className="p-4 bg-zinc-900 border-b border-zinc-800 flex items-center justify-between z-20">
-         <div className="flex items-center gap-4">
-           <div className="flex flex-col">
-             <span className="text-[10px] uppercase text-zinc-500 font-bold tracking-wider">Stretch Factor</span>
-             <div className="flex items-center gap-2">
-               <Sliders size={14} className="text-zinc-400"/>
-               <input 
-                type="range" min="0.5" max="4.0" step="0.1" 
-                value={stretch} 
-                onChange={(e) => setStretch(parseFloat(e.target.value))}
-                className="w-32 accent-orange-500 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer"
-               />
-               <span className="text-xs font-mono text-orange-400">{stretch.toFixed(1)}x</span>
-             </div>
-           </div>
-         </div>
-         {finalImage && (
-           <a href={finalImage} download="slitscan_panorama.png" className="text-emerald-500 hover:text-emerald-400 flex items-center gap-1 text-sm font-medium">
-             <Download size={16}/> Save
-           </a>
-         )}
-      </div>
-
-      {/* Viewport */}
-      <div className="flex-1 relative overflow-hidden flex flex-col">
-        
-        {/* Live Video Feed (Reference) */}
-        <div className="relative h-1/3 bg-black border-b border-zinc-800 flex justify-center overflow-hidden">
-          <video 
-            ref={videoRef} 
-            autoPlay 
-            playsInline 
-            muted 
-            className="h-full object-cover opacity-80"
-          />
-          {/* Center Line Indicator */}
-          <div className="absolute top-0 bottom-0 left-1/2 w-0.5 bg-red-500 shadow-[0_0_10px_rgba(255,0,0,0.8)] z-10"></div>
-          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/20 text-red-200 text-[10px] px-2 py-0.5 rounded backdrop-blur-sm border border-red-500/30">
-            SCAN LINE
-          </div>
-        </div>
-
-        {/* Canvas Result */}
-        <div className="flex-1 bg-zinc-900 overflow-x-auto overflow-y-hidden relative custom-scrollbar">
-          <div className="absolute inset-0 flex items-center">
-             <canvas ref={canvasRef} className="h-full bg-zinc-950 shadow-xl" />
-          </div>
-          {!scanning && !xPos.current && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-               <p className="text-zinc-700 font-black text-6xl opacity-20 uppercase tracking-tighter">Result Area</p>
-            </div>
-          )}
-        </div>
-
-        {/* Action Button */}
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30">
-          <button 
-            onClick={toggleScan}
-            className={`w-20 h-20 rounded-full border-4 shadow-[0_0_30px_rgba(0,0,0,0.5)] flex items-center justify-center transition-all ${scanning ? 'bg-red-600 border-red-400 scale-110' : 'bg-white border-zinc-300 hover:scale-105'}`}
-          >
-            <div className={`w-8 h-8 rounded-sm transition-all ${scanning ? 'bg-white' : 'bg-red-600 rounded-full'}`} />
-          </button>
-          <p className="text-center mt-4 text-zinc-400 text-xs font-medium drop-shadow-md bg-black/50 px-2 py-1 rounded-full">
-            {scanning ? 'Move slowly right...' : 'Tap to Scan'}
-          </p>
-        </div>
-
-      </div>
-    </div>
-  );
-}
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<VanScanner />);
+    </script>
+</body>
+</html>
