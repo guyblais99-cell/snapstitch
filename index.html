@@ -30,9 +30,9 @@
         const IconDownload = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>;
         const IconUpload = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>;
         const IconRefresh = ({className}) => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>;
-        const IconSliders = () => <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>;
         const IconImage = () => <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>;
         const IconX = () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+        const IconZap = ({fill}) => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill={fill} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>;
 
         // --- Helper Functions ---
         const solveHomography = (srcPts, dstPts) => {
@@ -90,7 +90,7 @@
             );
         }
 
-        // --- Rectify Tool (Unchanged) ---
+        // --- Rectify Tool (Standard) ---
         function RectifyTool() {
             const [image, setImage] = useState(null);
             const [points, setPoints] = useState(null);
@@ -254,7 +254,7 @@
             );
         }
 
-        // --- Slit Scan Tool (Updated) ---
+        // --- Slit Scan Tool (Stabilized & Box Calibrated) ---
         function SlitScanTool() {
             const videoRef = useRef(null);
             const canvasRef = useRef(null);
@@ -263,8 +263,15 @@
             const requestRef = useRef();
             const xPos = useRef(0);
             
-            const [rawResult, setRawResult] = useState(null); // The unscaled capture
-            const [postScale, setPostScale] = useState(1.0);  // Post-processing width scale
+            const [stabilize, setStabilize] = useState(true);
+            const lastColumnData = useRef(null);
+
+            const [rawResult, setRawResult] = useState(null);
+            const [calibBox, setCalibBox] = useState({ x: 10, y: 10, w: 100, h: 100 });
+            const [calibDims, setCalibDims] = useState({ w: 500, h: 500 }); // mm
+            const [postScale, setPostScale] = useState(1.0);
+            const [dragMode, setDragMode] = useState(null); // 'move', 'br'
+            const reviewContainerRef = useRef(null);
 
             const startCamera = async () => {
                 try {
@@ -285,8 +292,42 @@
                     if(videoRef.current) canvas.height = videoRef.current.videoHeight;
                 }
                 xPos.current = 0; 
+                lastColumnData.current = null;
                 setRawResult(null);
                 setPostScale(1.0);
+            };
+
+            // --- Stabilization Logic ---
+            const findBestOffset = (currData, prevData, width, height) => {
+                if (!prevData) return 0;
+                let bestOffset = 0;
+                let minDiff = Infinity;
+                const maxShift = 10; // Max vertical jitter pixels to correct
+                
+                // Sample center vertical strip to save CPU
+                const step = 4; 
+                
+                for (let offset = -maxShift; offset <= maxShift; offset++) {
+                    let diff = 0;
+                    let count = 0;
+                    
+                    for (let y = maxShift; y < height - maxShift; y += step) {
+                        const prevIdx = (y * width) * 4; 
+                        const currIdx = ((y + offset) * width) * 4;
+                        
+                        // Compare luminance roughly
+                        const r1 = prevData[prevIdx], g1 = prevData[prevIdx+1], b1 = prevData[prevIdx+2];
+                        const r2 = currData[currIdx], g2 = currData[currIdx+1], b2 = currData[currIdx+2];
+                        
+                        diff += Math.abs(r1 - r2) + Math.abs(g1 - g2) + Math.abs(b1 - b2);
+                        count++;
+                    }
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        bestOffset = offset;
+                    }
+                }
+                return bestOffset;
             };
 
             const scanTick = useCallback(() => {
@@ -297,10 +338,11 @@
                 
                 if (canvas.height !== video.videoHeight && video.videoHeight > 0) canvas.height = video.videoHeight;
                 
-                const sliceWidth = 2; // Fixed capture width
-                const drawWidth = 2;  // Draw 1:1 initially, scale later
+                const sliceWidth = 4; // Wider slice for better stabilization correlation
+                const drawWidth = 2; // Visual output width (squish factor inherent)
                 
-                if (canvas.width < xPos.current + drawWidth + 10) {
+                // 1. Resize Canvas if needed
+                if (canvas.width < xPos.current + drawWidth + 20) {
                     const temp = document.createElement('canvas');
                     temp.width = canvas.width; temp.height = canvas.height;
                     if(canvas.width > 0) temp.getContext('2d').drawImage(canvas, 0, 0);
@@ -309,21 +351,44 @@
                 }
                 
                 const sx = (video.videoWidth / 2) - (sliceWidth / 2);
+                
                 if (video.readyState === 4) {
-                    ctx.drawImage(video, sx, 0, sliceWidth, video.videoHeight, xPos.current, 0, drawWidth, video.videoHeight);
+                    // 2. Stabilization Check
+                    let yOffset = 0;
+                    if (stabilize && lastColumnData.current) {
+                        // Create temp canvas to read pixel data of current video frame slice
+                        const tC = document.createElement('canvas');
+                        tC.width = sliceWidth; tC.height = video.videoHeight;
+                        const tCtx = tC.getContext('2d');
+                        tCtx.drawImage(video, sx, 0, sliceWidth, video.videoHeight, 0, 0, sliceWidth, video.videoHeight);
+                        const currData = tCtx.getImageData(0, 0, sliceWidth, video.videoHeight).data;
+                        
+                        yOffset = findBestOffset(currData, lastColumnData.current, sliceWidth, video.videoHeight);
+                        
+                        // Update reference
+                        lastColumnData.current = currData;
+                    } else if (stabilize) {
+                        // First frame init
+                        const tC = document.createElement('canvas');
+                        tC.width = sliceWidth; tC.height = video.videoHeight;
+                        const tCtx = tC.getContext('2d');
+                        tCtx.drawImage(video, sx, 0, sliceWidth, video.videoHeight, 0, 0, sliceWidth, video.videoHeight);
+                        lastColumnData.current = tCtx.getImageData(0, 0, sliceWidth, video.videoHeight).data;
+                    }
+
+                    // 3. Draw Slices
+                    // We actually draw just the center 2px of the captured 4px slice to avoid edge artifacts
+                    ctx.drawImage(video, sx + 1, 0 + yOffset, 2, video.videoHeight, xPos.current, 0, drawWidth, video.videoHeight);
                     xPos.current += drawWidth;
                 }
                 
                 requestRef.current = requestAnimationFrame(scanTick);
-            }, []);
+            }, [stabilize]);
 
             const toggleScan = () => {
                 if (scanning) {
-                    // STOP SCANNING
                     setScanning(false);
                     cancelAnimationFrame(requestRef.current);
-                    
-                    // Crop canvas to actual size and save as raw result
                     const canvas = canvasRef.current;
                     const finalW = xPos.current;
                     if (finalW > 0) {
@@ -331,13 +396,86 @@
                         temp.width = finalW; temp.height = canvas.height;
                         temp.getContext('2d').drawImage(canvas, 0, 0, finalW, canvas.height, 0, 0, finalW, canvas.height);
                         setRawResult(temp.toDataURL());
+                        // Init calibration box at center
+                        setCalibBox({ x: finalW * 0.2, y: canvas.height * 0.2, w: finalW * 0.6, h: canvas.height * 0.6 });
                     }
                 } else {
-                    // START SCANNING
                     reset();
                     setScanning(true);
                     requestRef.current = requestAnimationFrame(scanTick);
                 }
+            };
+
+            // --- Review & Calibration Logic ---
+            const handleBoxStart = (mode, e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setDragMode(mode);
+            };
+
+            const handleBoxMove = (e) => {
+                if (!dragMode || !reviewContainerRef.current) return;
+                const rect = reviewContainerRef.current.getBoundingClientRect();
+                const img = reviewContainerRef.current.querySelector('img');
+                if(!img) return;
+                
+                // Scale mapping: Screen pixels -> Image pixels
+                // Note: The image is visually scaled by postScale CSS transform, but coords are internal? 
+                // Actually, let's overlay on the *visual* image.
+                // Simpler: Calculate relative % coordinates.
+                
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                
+                // Mouse pos relative to image container
+                // We need the image's rendered size
+                const imgRect = img.getBoundingClientRect();
+                const relX = (clientX - imgRect.left); // Visual pixels
+                const relY = (clientY - imgRect.top);
+                
+                // Convert visual pixels to internal raw image pixels
+                // Visual Width = RawWidth * postScale
+                // scaleFactor = RawWidth / VisualWidth
+                const rawW = img.naturalWidth;
+                const rawH = img.naturalHeight;
+                
+                const scaleX = rawW / imgRect.width;
+                const scaleY = rawH / imgRect.height;
+                
+                const actualX = relX * scaleX;
+                const actualY = relY * scaleY;
+
+                if (dragMode === 'move') {
+                    setCalibBox(prev => ({ 
+                        ...prev, 
+                        x: actualX - prev.w/2, 
+                        y: actualY - prev.h/2 
+                    }));
+                } else if (dragMode === 'br') {
+                    setCalibBox(prev => ({
+                        ...prev,
+                        w: Math.max(20, actualX - prev.x),
+                        h: Math.max(20, actualY - prev.y)
+                    }));
+                }
+            };
+
+            const applyCalibration = () => {
+                // Real Aspect Ratio (Target)
+                const targetRatio = parseFloat(calibDims.w) / parseFloat(calibDims.h);
+                
+                // Current Box Aspect Ratio (in Pixels)
+                // IMPORTANT: Slit scan height is physically correct (camera lens). Width is warped.
+                // So we trust the vertical pixels to be "True Scale" (roughly).
+                // We adjust Width to match.
+                
+                const currentPixelRatio = calibBox.w / calibBox.h;
+                
+                // If box is 100x100px (Ratio 1), but Real is 200x100mm (Ratio 2).
+                // We need to stretch width by 2.
+                
+                const newScale = targetRatio / currentPixelRatio;
+                setPostScale(newScale);
             };
 
             const saveFinal = () => {
@@ -345,13 +483,14 @@
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
+                    // Apply the calculated scale
                     const newW = img.width * postScale;
                     canvas.width = newW;
                     canvas.height = img.height;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, newW, img.height);
                     const link = document.createElement('a');
-                    link.download = 'van_scan_result.png';
+                    link.download = 'van_scan_calibrated.png';
                     link.href = canvas.toDataURL();
                     link.click();
                 };
@@ -359,67 +498,101 @@
             };
 
             return (
-                <div className="h-full flex flex-col bg-zinc-950">
-                    {/* --- REVIEW MODE --- */}
+                <div className="h-full flex flex-col bg-zinc-950" 
+                     onMouseMove={handleBoxMove} onTouchMove={handleBoxMove} 
+                     onMouseUp={() => setDragMode(null)} onTouchEnd={() => setDragMode(null)}>
+                    
                     {rawResult ? (
                         <div className="flex-1 flex flex-col bg-zinc-900 animate-in fade-in">
-                            <div className="p-4 bg-zinc-800 border-b border-zinc-700 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <button onClick={() => { setRawResult(null); reset(); }} className="px-3 py-1.5 text-zinc-400 hover:text-white text-sm font-medium"><IconX /> Discard</button>
-                                </div>
-                                <h2 className="text-sm font-bold text-zinc-200">Review Scan</h2>
-                                <button onClick={saveFinal} className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-lg text-sm font-bold flex items-center gap-2">
-                                    <IconDownload /> Save
-                                </button>
+                            <div className="p-2 bg-zinc-800 border-b border-zinc-700 flex items-center justify-between shrink-0">
+                                <button onClick={() => { setRawResult(null); reset(); }} className="px-3 py-1.5 text-zinc-400 hover:text-white text-xs font-medium"><IconX /> Discard</button>
+                                <h2 className="text-xs font-bold text-zinc-200">Calibrate</h2>
+                                <button onClick={saveFinal} className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded text-xs font-bold flex items-center gap-1"><IconDownload /> Save</button>
                             </div>
                             
-                            {/* Editor View */}
-                            <div className="flex-1 flex flex-col items-center justify-center overflow-hidden p-4">
-                                <div className="relative w-full h-full flex items-center justify-center bg-black/20 rounded-lg border border-zinc-800 overflow-auto custom-scrollbar">
-                                     {/* The Image with Dynamic Scale */}
+                            {/* Editor */}
+                            <div className="flex-1 flex flex-col items-center justify-center overflow-hidden p-2 relative select-none" ref={reviewContainerRef}>
+                                <div className="relative shadow-2xl border border-zinc-700 bg-black/50">
                                      <img 
                                         src={rawResult} 
-                                        style={{ transform: `scaleX(${postScale})`, transformOrigin: 'center left', height: '100%' }} 
-                                        className="object-contain max-h-full shadow-2xl"
+                                        className="max-h-[60vh] max-w-full object-contain pointer-events-none"
+                                        style={{ transform: `scaleX(${postScale})`, transformOrigin: 'left top' }}
                                      />
+                                     
+                                     {/* Calibration Overlay - Visually scaled to match image transform */}
+                                     <div 
+                                        className="absolute border-2 border-orange-500 bg-orange-500/10 cursor-move group"
+                                        style={{ 
+                                            left: `${(calibBox.x / (reviewContainerRef.current?.querySelector('img')?.naturalWidth || 1)) * 100}%`,
+                                            top: `${(calibBox.y / (reviewContainerRef.current?.querySelector('img')?.naturalHeight || 1)) * 100}%`,
+                                            width: `${(calibBox.w / (reviewContainerRef.current?.querySelector('img')?.naturalWidth || 1)) * 100 * postScale}%`,
+                                            height: `${(calibBox.h / (reviewContainerRef.current?.querySelector('img')?.naturalHeight || 1)) * 100}%`,
+                                        }}
+                                        onMouseDown={(e) => handleBoxStart('move', e)}
+                                        onTouchStart={(e) => handleBoxStart('move', e)}
+                                     >
+                                        {/* Resize Handle */}
+                                        <div 
+                                            className="absolute bottom-0 right-0 w-6 h-6 bg-orange-500 cursor-nwse-resize -mr-3 -mb-3 z-20 rounded-full border-2 border-white shadow-sm"
+                                            onMouseDown={(e) => handleBoxStart('br', e)}
+                                            onTouchStart={(e) => handleBoxStart('br', e)}
+                                        />
+                                        <div className="absolute top-0 left-0 bg-orange-500 text-black text-[10px] px-1 font-bold">Known Object</div>
+                                     </div>
                                 </div>
                             </div>
 
-                            {/* Sliders */}
-                            <div className="p-6 bg-zinc-900 border-t border-zinc-800 z-20 pb-10">
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Width Correction</span>
-                                    <span className="text-xs font-mono text-orange-400">{Math.round(postScale * 100)}%</span>
+                            {/* Controls */}
+                            <div className="p-4 bg-zinc-900 border-t border-zinc-800 z-20 pb-8">
+                                <p className="text-zinc-500 text-[10px] mb-2 text-center uppercase tracking-wide font-bold">Align Box to Real Object & Enter Dimensions</p>
+                                <div className="flex items-end justify-center gap-2">
+                                    <div className="flex flex-col">
+                                        <span className="text-[10px] text-zinc-500 font-mono">Real Width (mm)</span>
+                                        <input 
+                                            type="number" value={calibDims.w} 
+                                            onChange={(e) => setCalibDims(d => ({...d, w: e.target.value}))} 
+                                            className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-center text-white"
+                                        />
+                                    </div>
+                                    <div className="text-zinc-600 pb-2">x</div>
+                                    <div className="flex flex-col">
+                                        <span className="text-[10px] text-zinc-500 font-mono">Real Height (mm)</span>
+                                        <input 
+                                            type="number" value={calibDims.h} 
+                                            onChange={(e) => setCalibDims(d => ({...d, h: e.target.value}))} 
+                                            className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm text-center text-white"
+                                        />
+                                    </div>
+                                    <button 
+                                        onClick={applyCalibration}
+                                        className="bg-orange-600 hover:bg-orange-500 text-white px-4 py-1.5 rounded h-8 text-xs font-bold ml-2"
+                                    >
+                                        Auto-Correct
+                                    </button>
                                 </div>
-                                <div className="flex items-center gap-4">
-                                    <span className="text-xs text-zinc-600">Squish</span>
-                                    <input 
-                                        type="range" min="0.1" max="5.0" step="0.05" 
-                                        value={postScale} 
-                                        onChange={(e) => setPostScale(parseFloat(e.target.value))}
-                                        className="flex-1 accent-orange-500 h-2 bg-zinc-700 rounded-lg appearance-none cursor-pointer"
-                                    />
-                                    <span className="text-xs text-zinc-600">Stretch</span>
-                                </div>
-                                <p className="text-center text-zinc-500 text-xs mt-4">Drag slider to restore correct aspect ratio</p>
                             </div>
                         </div>
                     ) : (
-                        /* --- SCAN MODE --- */
-                        <>
                         <div className="flex-1 relative overflow-hidden flex flex-col">
                             <div className="relative h-2/5 bg-black border-b border-zinc-800 flex justify-center overflow-hidden">
                                 <video ref={videoRef} autoPlay playsInline muted className="h-full object-cover opacity-80" />
                                 <div className="absolute top-0 bottom-0 left-1/2 w-0.5 bg-red-500 shadow-[0_0_10px_rgba(255,0,0,0.8)] z-10"></div>
                                 <div className="absolute bottom-2 left-1/2 -translate-x-1/2 bg-red-500/20 text-red-200 text-[10px] px-2 py-0.5 rounded backdrop-blur-sm border border-red-500/30">SCAN LINE</div>
+                                <button 
+                                    onClick={() => setStabilize(!stabilize)} 
+                                    className={`absolute top-4 right-4 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1 border ${stabilize ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-zinc-800 border-zinc-600 text-zinc-500'}`}
+                                >
+                                    <IconZap fill={stabilize ? "currentColor" : "none"} />
+                                    {stabilize ? "Stabilizer ON" : "Stabilizer OFF"}
+                                </button>
                             </div>
                             <div className="flex-1 bg-zinc-900 overflow-x-auto overflow-y-hidden relative custom-scrollbar">
                                 <div className="absolute inset-0 flex items-center">
                                     <canvas ref={canvasRef} className="h-full bg-zinc-950 shadow-xl" />
                                 </div>
                                 {!scanning && !xPos.current && (
-                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                        <p className="text-zinc-700 font-black text-4xl sm:text-6xl opacity-20 uppercase tracking-tighter text-center">Ready to Scan</p>
+                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none flex-col opacity-20">
+                                        <p className="text-zinc-700 font-black text-4xl uppercase tracking-tighter">Ready to Scan</p>
                                     </div>
                                 )}
                             </div>
@@ -432,7 +605,6 @@
                                 </div>
                             </div>
                         </div>
-                        </>
                     )}
                 </div>
             );
